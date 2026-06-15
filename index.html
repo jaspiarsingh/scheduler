@@ -1425,3 +1425,340 @@
                     <td class="px-6 py-4 font-bold text-slate-700">${s.ldap}</td>
                     <td class="px-6 py-4 font-medium text-slate-800">${s.name}</td>
                     <td class="px-6 py-4">
+                        <span class="px-2.5 py-1 rounded-full text-xs font-semibold ${badgeColor}">${s.shift} Shift</span>
+                    </td>
+                    <td class="px-6 py-4 text-right space-x-2">
+                        <button onclick="editStaff('${s.id}')" class="text-indigo-600 hover:text-indigo-800 font-semibold text-xs cursor-pointer"><i class="fa-solid fa-pen"></i> Edit</button>
+                        <button onclick="deleteStaff('${s.id}')" class="text-rose-600 hover:text-rose-800 font-semibold text-xs cursor-pointer"><i class="fa-solid fa-trash"></i> Delete</button>
+                    </td>
+                `;
+                body.appendChild(tr);
+            });
+        }
+
+        function filterStaffTable() {
+            const q = document.getElementById("staffSearch").value.toLowerCase();
+            const shift = document.getElementById("staffShiftFilter").value;
+
+            state.staff.forEach(s => {
+                const row = document.getElementById(`staff-row-${s.id}`);
+                if (!row) return;
+
+                const matchesSearch = s.name.toLowerCase().includes(q) || s.ldap.toLowerCase().includes(q);
+                const matchesShift = shift === "ALL" || s.shift === shift;
+
+                if (matchesSearch && matchesShift) {
+                    row.classList.remove("hidden");
+                } else {
+                    row.classList.add("hidden");
+                }
+            });
+        }
+
+        function editStaff(id) {
+            openStaffModal(id);
+        }
+
+        function openStaffModal(id = null) {
+            if (state.settings.isLocked) return;
+
+            const modal = document.getElementById("staffModal");
+            const title = document.getElementById("staffModalTitle");
+            const form = document.getElementById("staffForm");
+
+            form.reset();
+            document.getElementById("staffId").value = "";
+
+            if (id) {
+                title.innerText = "Edit Staff Member";
+                const s = state.staff.find(staff => staff.id === id);
+                document.getElementById("staffId").value = s.id;
+                document.getElementById("staffName").value = s.name;
+                document.getElementById("staffLdap").value = s.ldap;
+                document.getElementById("staffShift").value = s.shift;
+            } else {
+                title.innerText = "Add Staff Member";
+            }
+
+            modal.classList.remove("hidden");
+        }
+
+        function closeStaffModal() {
+            document.getElementById("staffModal").classList.add("hidden");
+        }
+
+        function saveStaff(e) {
+            e.preventDefault();
+            if (state.settings.isLocked) return;
+
+            const id = document.getElementById("staffId").value;
+            const name = document.getElementById("staffName").value.trim();
+            const ldap = document.getElementById("staffLdap").value.trim();
+            const shift = document.getElementById("staffShift").value;
+
+            if (id) {
+                const s = state.staff.find(staff => staff.id === id);
+                s.name = name;
+                s.ldap = ldap;
+                s.shift = shift;
+            } else {
+                const newId = "s_" + Date.now();
+                state.staff.push({ id: newId, name, ldap, shift });
+            }
+
+            saveState();
+            renderAll();
+            closeStaffModal();
+        }
+
+        function deleteStaff(id) {
+            if (state.settings.isLocked) return;
+
+            if (confirm("Are you sure you want to remove this staff member? This will clear their historical schedules.")) {
+                state.staff = state.staff.filter(s => s.id !== id);
+               
+                const weekOf = state.settings.currentWeek;
+                if (state.schedules[weekOf]) {
+                    for (let day = 0; day < 5; day++) {
+                        const sched = state.schedules[weekOf][day];
+                        if (sched) {
+                            ["AM", "PM"].forEach(sh => {
+                                if (sched[sh]) {
+                                    Object.keys(sched[sh]).forEach(role => {
+                                        sched[sh][role] = sched[sh][role].map(val => val === id ? null : val);
+                                    });
+                                }
+                            });
+                        }
+                    }
+                }
+
+                saveState();
+                renderAll();
+            }
+        }
+
+        // Robots Tab Logic
+        function renderRobotsList() {
+            const list = document.getElementById("robotsList");
+            list.innerHTML = "";
+
+            state.robots.forEach(r => {
+                const div = document.createElement("div");
+                div.className = "px-6 py-4 flex items-center justify-between hover:bg-slate-50/50 transition-all";
+                div.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <div class="p-2.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                            <i class="fa-solid fa-robot"></i>
+                        </div>
+                        <div>
+                            <h4 class="font-bold text-slate-800 text-sm">${r.name}</h4>
+                            <p class="text-[10px] uppercase text-slate-400 font-bold tracking-wider">Robot ID: ${r.id}</p>
+                        </div>
+                    </div>
+                    <button onclick="deleteRobot('${r.id}')" class="text-rose-600 hover:text-rose-800 text-xs font-semibold cursor-pointer"><i class="fa-solid fa-trash-can"></i> Remove</button>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function addRobotPrompt() {
+            if (state.settings.isLocked) return;
+
+            const name = prompt("Enter robot name / serial number:");
+            if (name && name.trim()) {
+                const id = "r_" + Date.now();
+                state.robots.push({ id, name: name.trim() });
+                saveState();
+                renderAll();
+            }
+        }
+
+        function deleteRobot(id) {
+            if (state.settings.isLocked) return;
+
+            if (confirm("Are you sure you want to remove this robot? Existing schedules for this robot will be reset.")) {
+                state.robots = state.robots.filter(r => r.id !== id);
+                saveState();
+                renderAll();
+            }
+        }
+
+        // OOO Matrix Logic
+        function renderOooMatrix() {
+            const body = document.getElementById("oooMatrixBody");
+            body.innerHTML = "";
+
+            const weekOf = state.settings.currentWeek;
+            const weekOoo = state.ooo[weekOf] || {};
+            const isLocked = state.settings.isLocked;
+
+            const sortedStaff = [...state.staff].sort((a,b) => {
+                if (a.shift !== b.shift) return a.shift.localeCompare(b.shift);
+                return a.name.localeCompare(b.name);
+            });
+
+            sortedStaff.forEach(staff => {
+                const tr = document.createElement("tr");
+                tr.className = "hover:bg-slate-50/50 transition-all";
+
+                const badgeColor = staff.shift === "AM" ? "bg-indigo-50 text-indigo-700" : "bg-rose-50 text-rose-700";
+
+                let columnsHtml = `
+                    <td class="px-6 py-4">
+                        <div class="flex flex-col">
+                            <span class="font-bold text-slate-800 text-sm">${staff.name}</span>
+                            <span class="text-[10px] text-slate-400 font-semibold">@${staff.ldap} &bull; <span class="text-indigo-600">${staff.shift}</span></span>
+                        </div>
+                    </td>
+                `;
+
+                for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
+                    const isOoo = (weekOoo[dayIndex] || []).includes(staff.id);
+                    const checkboxId = `ooo-${staff.id}-${dayIndex}`;
+                   
+                    if (isLocked) {
+                        columnsHtml += `
+                            <td class="px-6 py-4 text-center">
+                                <input type="checkbox" id="${checkboxId}" ${isOoo ? 'checked' : ''} disabled class="w-4 h-4 rounded text-slate-400 bg-slate-100 border-slate-200 cursor-not-allowed">
+                            </td>
+                        `;
+                    } else {
+                        columnsHtml += `
+                            <td class="px-6 py-4 text-center">
+                                <input type="checkbox" id="${checkboxId}" ${isOoo ? 'checked' : ''} onchange="toggleOooCell('${staff.id}', ${dayIndex})" class="w-4 h-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500 cursor-pointer">
+                            </td>
+                        `;
+                    }
+                }
+
+                tr.innerHTML = columnsHtml;
+                body.appendChild(tr);
+            });
+        }
+
+        function toggleOooCell(staffId, dayIndex) {
+            if (state.settings.isLocked) return;
+
+            const weekOf = state.settings.currentWeek;
+            if (!state.ooo[weekOf]) state.ooo[weekOf] = {};
+            if (!state.ooo[weekOf][dayIndex]) state.ooo[weekOf][dayIndex] = [];
+
+            const list = state.ooo[weekOf][dayIndex];
+            const idx = list.indexOf(staffId);
+
+            if (idx > -1) {
+                list.splice(idx, 1);
+            } else {
+                list.push(staffId);
+            }
+
+            saveState();
+            renderAll();
+        }
+
+        // Rules and Settings Tab Logic
+        function saveRulesAndSettings() {
+            if (state.settings.isLocked) return;
+
+            state.settings.amRotationMode = document.getElementById("amRotationMode").value;
+            state.settings.pmRotationMode = document.getElementById("pmRotationMode").value;
+
+            state.settings.timeConfig.AM = [];
+            for (let i = 0; i < 3; i++) {
+                state.settings.timeConfig.AM.push(document.getElementById(`time-AM-${i}`).value.trim());
+            }
+
+            state.settings.timeConfig.PM = [];
+            for (let i = 0; i < 2; i++) {
+                state.settings.timeConfig.PM.push(document.getElementById(`time-PM-${i}`).value.trim());
+            }
+
+            saveState();
+            renderAll();
+            alert("Rotation rules and timing profiles updated successfully!");
+        }
+
+        function resetToDefaults() {
+            if (state.settings.isLocked) return;
+
+            if (confirm("This will completely delete your database overrides, clear your schedule edits, and load the screenshot's defaults. Continue?")) {
+                loadDefaults();
+                initApp();
+                alert("App data restored to default configuration.");
+            }
+        }
+
+        // CSV Exporter Engine
+        function exportToCSV() {
+            const weekOf = state.settings.currentWeek;
+            const shiftType = state.settings.currentShift;
+            const robots = state.robots;
+            const P = shiftType === "AM" ? 3 : 2;
+            const times = state.settings.timeConfig[shiftType];
+
+            let csvContent = `BD Ops Schedule - Week of ${weekOf} - Shift ${shiftType}\n\n`;
+           
+            let csvHeader = "Day,Date,Station,Role";
+            for (let p = 0; p < P; p++) {
+                csvHeader += `,Phase ${p+1} (${times[p] || ''})`;
+            }
+            csvContent += csvHeader + "\n";
+
+            for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
+                const dayName = DAYS_OF_WEEK[dayIndex];
+                const dateStr = getDayDateString(weekOf, dayIndex);
+                const dateObj = new Date(dateStr + "T12:00:00");
+                const dateFormatted = dateObj.toLocaleDateString('en-US');
+
+                // Check for Holiday
+                if (state.holidays && state.holidays[dateStr]) {
+                    csvContent += `"${dayName}","${dateFormatted}","HOLIDAY & CLOSURE","${state.holidays[dateStr]}","-- Lab Closed --"\n`;
+                    continue;
+                }
+
+                const rolesList = [];
+                robots.forEach(r => {
+                    rolesList.push({ id: `${r.id}_pilot`, station: r.name, role: "pilot" });
+                    rolesList.push({ id: `${r.id}_co-pilot`, station: r.name, role: "co-pilot" });
+                });
+
+                const activeStaffCount = getActiveStaffForDayAndShift(weekOf, dayIndex, shiftType).length;
+                const maxSimCount = Math.max(2, activeStaffCount - (robots.length * 2));
+                for (let i = 1; i <= maxSimCount; i++) {
+                    rolesList.push({ id: `Sim_sim_${i}`, station: "Sim Station", role: `sim ${i}` });
+                }
+
+                rolesList.forEach(role => {
+                    const scheduleData = (state.schedules[weekOf] && state.schedules[weekOf][dayIndex] && state.schedules[weekOf][dayIndex][shiftType]) || {};
+                    const assignments = scheduleData[role.id] || Array(P).fill(null);
+
+                    let rowStr = `"${dayName}","${dateFormatted}","${role.station}","${role.role}"`;
+                    for (let p = 0; p < P; p++) {
+                        const sId = assignments[p];
+                        const staff = state.staff.find(s => s.id === sId);
+                        rowStr += `,"${staff ? staff.name : '--'}"`;
+                    }
+                    csvContent += rowStr + "\n";
+                });
+            }
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.setAttribute("href", url);
+            link.setAttribute("download", `BD_Ops_Schedule_${weekOf}_${shiftType}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function getActiveStaffForDayAndShift(weekOf, dayIndex, shiftType) {
+            const baseEligibles = getWeeklyRosterStaff(weekOf, shiftType);
+            const oooList = (state.ooo[weekOf] && state.ooo[weekOf][dayIndex]) || [];
+            return baseEligibles.filter(s => !oooList.includes(s.id));
+        }
+    </script>
+</body>
+</html>
