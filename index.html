@@ -607,6 +607,7 @@
             } else {
                 loadDefaults();
             }
+            ensureCurrentWeekPopulated();
         }
 
         function loadDefaults() {
@@ -634,6 +635,26 @@
 
         function saveState() {
             localStorage.setItem("bd_ops_scheduler_secured_state", JSON.stringify(state));
+        }
+
+        function ensureCurrentWeekPopulated() {
+            const defaultWeek = "2026-06-15";
+            if (!state.schedules[defaultWeek] || Object.keys(state.schedules[defaultWeek]).length === 0) {
+                if (!state.schedules[defaultWeek]) state.schedules[defaultWeek] = {};
+                if (!state.weeklyRosters[defaultWeek]) state.weeklyRosters[defaultWeek] = {};
+               
+                ["AM", "PM"].forEach(sh => {
+                    if (!state.weeklyRosters[defaultWeek][sh]) {
+                        state.weeklyRosters[defaultWeek][sh] = state.staff.filter(s => s.shift === sh).map(s => s.id);
+                    }
+                });
+
+                for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
+                    generateDayShift(defaultWeek, dayIndex, "AM");
+                    generateDayShift(defaultWeek, dayIndex, "PM");
+                }
+                saveState();
+            }
         }
 
         function initApp() {
