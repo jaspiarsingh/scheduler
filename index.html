@@ -517,7 +517,7 @@
            
             <div class="space-y-3 text-sm">
                 <div class="relative">
-                    <input type="password" id="adminPasswordInput" placeholder="Password" onkeydown="if(event.key==='Enter') verifyAndUnlock()" class="w-full bg-slate-50 border border-slate-200 rounded-lg pl-3 pr-10 py-2.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                    <input type="password" id="adminPasswordInput" placeholder="Password (default is admin)" onkeydown="if(event.key==='Enter') verifyAndUnlock()" class="w-full bg-slate-50 border border-slate-200 rounded-lg pl-3 pr-10 py-2.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none">
                     <button type="button" onclick="togglePasswordVisibility('adminPasswordInput', this)" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer text-sm" title="Show Password">
                         <i class="fa-solid fa-eye"></i>
                     </button>
@@ -556,7 +556,7 @@
                     "PM": ["2PM - 6:30 PM", "7 PM - 10:20 PM"]
                 },
                 isLocked: true, // App starts locked by default on every load
-                adminPassword: "RaManagementOnly!" // Default password
+                adminPassword: "admin" // Default password
             }
         };
 
@@ -618,6 +618,13 @@
                 loadDefaults();
             }
             ensureCurrentWeekPopulated();
+            if (state.settings.carouselVersion !== 2) {
+                state.settings.carouselVersion = 2;
+                Object.keys(state.schedules).forEach(week => {
+                    generateWeeklySchedule(week);
+                });
+                saveState();
+            }
         }
 
         function loadDefaults() {
@@ -659,10 +666,7 @@
                     }
                 });
 
-                for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
-                    generateDayShift(defaultWeek, dayIndex, "AM");
-                    generateDayShift(defaultWeek, dayIndex, "PM");
-                }
+                generateWeeklySchedule(defaultWeek);
                 saveState();
             }
         }
@@ -917,6 +921,7 @@
                     return;
                 }
             }
+            generateWeeklySchedule(state.settings.currentWeek);
             saveState();
             renderAll();
         }
@@ -941,6 +946,7 @@
             if (dateStr && name) {
                 if (!state.holidays) state.holidays = {};
                 state.holidays[dateStr] = name;
+                generateWeeklySchedule(state.settings.currentWeek);
                 saveState();
                 renderAll();
                 closeHolidayModal();
@@ -951,6 +957,7 @@
             if (state.settings.isLocked) return;
             if (confirm(`Remove this holiday entry (${dateStr})?`)) {
                 if (state.holidays) delete state.holidays[dateStr];
+                generateWeeklySchedule(state.settings.currentWeek);
                 saveState();
                 renderAll();
             }
@@ -1046,11 +1053,7 @@
                 state.weeklyRosters[weekOf][shiftType] = shuffled.map(s => s.id);
             });
 
-            // Generate daily schedules for the week
-            for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
-                generateDayShift(weekOf, dayIndex, "AM");
-                generateDayShift(weekOf, dayIndex, "PM");
-            }
+            generateWeeklySchedule(weekOf);
 
             saveState();
             renderSchedule();
@@ -1079,120 +1082,118 @@
             return activeCurrent;
         }
 
-        function generateDayShift(weekOf, dayIndex, shiftType) {
-            const dateStr = getDayDateString(weekOf, dayIndex);
-           
-            // Bypass scheduling if this day is a holiday
-            if (state.holidays && state.holidays[dateStr]) {
-                if (!state.schedules[weekOf]) state.schedules[weekOf] = {};
-                if (!state.schedules[weekOf][dayIndex]) state.schedules[weekOf][dayIndex] = {};
-                state.schedules[weekOf][dayIndex][shiftType] = {};
-                return;
-            }
-
-            const baseRosterStaff = getWeeklyRosterStaff(weekOf, shiftType);
-            const oooList = (state.ooo[weekOf] && state.ooo[weekOf][dayIndex]) || [];
-            const activeStaff = baseRosterStaff.filter(s => !oooList.includes(s.id));
-           
-            const robots = state.robots;
-            const P = shiftType === "AM" ? 3 : 2;
-            const mode = shiftType === "AM" ? state.settings.amRotationMode : state.settings.pmRotationMode;
-
-            if (activeStaff.length === 0) return;
-
-            const N = activeStaff.length;
-            const rolesList = [];
-           
-            robots.forEach(r => {
-                rolesList.push({ id: `${r.id}_pilot`, rId: r.id, type: "pilot", label: `${r.name} - Pilot` });
-                rolesList.push({ id: `${r.id}_co-pilot`, rId: r.id, type: "co-pilot", label: `${r.name} - Co-pilot` });
-            });
-
-            const robotsSlotsCount = robots.length * 2;
-            if (N > robotsSlotsCount) {
-                const simBufferNeeded = N - robotsSlotsCount;
-                for (let i = 1; i <= simBufferNeeded; i++) {
-                    rolesList.push({ id: `Sim_sim_${i}`, rId: "Sim", type: `sim_${i}`, label: `Sim ${i}` });
-                }
-            }
-
-            const activeRoles = rolesList.slice(0, N);
-
+        function generateWeeklySchedule(weekOf) {
             if (!state.schedules[weekOf]) state.schedules[weekOf] = {};
-            if (!state.schedules[weekOf][dayIndex]) state.schedules[weekOf][dayIndex] = {};
-            state.schedules[weekOf][dayIndex][shiftType] = {};
 
-            activeRoles.forEach(role => {
-                state.schedules[weekOf][dayIndex][shiftType][role.id] = Array(P).fill(null);
-            });
+            ["AM", "PM"].forEach(shiftType => {
+                const baseRosterStaff = getWeeklyRosterStaff(weekOf, shiftType);
+                const P = shiftType === "AM" ? 3 : 2;
+                const mode = shiftType === "AM" ? state.settings.amRotationMode : state.settings.pmRotationMode;
+               
+                // Continuous carousel execution across the 5 working days
+                let currentCarouselStep = 0;
 
-            // Equitable Rotation Algorithms relative to Monday's (dayIndex 0) lineup
-            if (mode === "paired" && N >= 2) {
-                const pairs = [];
-                for (let i = 0; i < N; i += 2) {
-                    if (i + 1 < N) {
-                        pairs.push([activeStaff[i], activeStaff[i + 1]]);
-                    } else {
-                        pairs.push([activeStaff[i]]); // Lone buffer person
-                    }
-                }
+                for (let dayIndex = 0; dayIndex < 5; dayIndex++) {
+                    const dateStr = getDayDateString(weekOf, dayIndex);
 
-                // Daily evolution step
-                const dayOffset = dayIndex % pairs.length;
-                const rotatedPairs = [...pairs];
-                for (let d = 0; d < dayOffset; d++) {
-                    rotatedPairs.push(rotatedPairs.shift());
-                }
+                    if (!state.schedules[weekOf][dayIndex]) state.schedules[weekOf][dayIndex] = {};
+                    state.schedules[weekOf][dayIndex][shiftType] = {};
 
-                for (let p = 0; p < P; p++) {
-                    // Phase circular step
-                    const phaseShift = p % rotatedPairs.length;
-                    const currentPairs = [...rotatedPairs];
-                    for (let s = 0; s < phaseShift; s++) {
-                        currentPairs.push(currentPairs.shift());
+                    // Bypass scheduling if this day is a holiday
+                    if (state.holidays && state.holidays[dateStr]) {
+                        continue;
                     }
 
-                    let roleIdx = 0;
-                    currentPairs.forEach(pair => {
-                        if (pair.length === 2) {
-                            if (roleIdx < activeRoles.length) {
-                                const r1 = activeRoles[roleIdx].id;
-                                state.schedules[weekOf][dayIndex][shiftType][r1][p] = pair[0].id;
-                                roleIdx++;
-                            }
-                            if (roleIdx < activeRoles.length) {
-                                const r2 = activeRoles[roleIdx].id;
-                                state.schedules[weekOf][dayIndex][shiftType][r2][p] = pair[1].id;
-                                roleIdx++;
-                            }
-                        } else {
-                            if (roleIdx < activeRoles.length) {
-                                const r = activeRoles[roleIdx].id;
-                                state.schedules[weekOf][dayIndex][shiftType][r][p] = pair[0].id;
-                                roleIdx++;
+                    const oooList = (state.ooo[weekOf] && state.ooo[weekOf][dayIndex]) || [];
+                    const activeStaff = baseRosterStaff.filter(s => !oooList.includes(s.id));
+                   
+                    if (activeStaff.length === 0) continue;
+
+                    const N = activeStaff.length;
+                    const rolesList = [];
+                   
+                    state.robots.forEach(r => {
+                        rolesList.push({ id: `${r.id}_pilot`, rId: r.id, type: "pilot", label: `${r.name} - Pilot` });
+                        rolesList.push({ id: `${r.id}_co-pilot`, rId: r.id, type: "co-pilot", label: `${r.name} - Co-pilot` });
+                    });
+
+                    const robotsSlotsCount = state.robots.length * 2;
+                    if (N > robotsSlotsCount) {
+                        const simBufferNeeded = N - robotsSlotsCount;
+                        for (let i = 1; i <= simBufferNeeded; i++) {
+                            rolesList.push({ id: `Sim_sim_${i}`, rId: "Sim", type: `sim_${i}`, label: `Sim ${i}` });
+                        }
+                    }
+
+                    const activeRoles = rolesList.slice(0, N);
+                    activeRoles.forEach(role => {
+                        state.schedules[weekOf][dayIndex][shiftType][role.id] = Array(P).fill(null);
+                    });
+
+                    // Universal step rule: "if there are 2 people on sim then the names should move down by 2 if there's one person on sim then it should the operators should move down by 1 person."
+                    const simCount = Math.max(0, N - robotsSlotsCount);
+
+                    if ((mode === "paired" || simCount === 2) && N >= 2) {
+                        const pairs = [];
+                        for (let i = 0; i < N; i += 2) {
+                            if (i + 1 < N) {
+                                pairs.push([activeStaff[i], activeStaff[i + 1]]);
+                            } else {
+                                pairs.push([activeStaff[i]]);
                             }
                         }
-                    });
-                }
-            } else {
-                const step = mode === "individual_2" ? 2 : 1;
-               
-                // Daily evolution step
-                const dayOffset = dayIndex % N;
-                const rotatedStaff = [...activeStaff];
-                for (let d = 0; d < dayOffset; d++) {
-                    rotatedStaff.push(rotatedStaff.shift());
-                }
 
-                for (let p = 0; p < P; p++) {
-                    for (let i = 0; i < N; i++) {
-                        const targetRoleIdx = (i + p * step) % N;
-                        const roleId = activeRoles[targetRoleIdx].id;
-                        const staffId = rotatedStaff[i].id;
-                        state.schedules[weekOf][dayIndex][shiftType][roleId][p] = staffId;
+                        for (let p = 0; p < P; p++) {
+                            const phaseShift = currentCarouselStep % pairs.length;
+                            const currentPairs = [...pairs];
+                            for (let s = 0; s < phaseShift; s++) {
+                                currentPairs.push(currentPairs.shift());
+                            }
+
+                            let roleIdx = 0;
+                            currentPairs.forEach(pair => {
+                                if (pair.length === 2) {
+                                    if (roleIdx < activeRoles.length) {
+                                        const r1 = activeRoles[roleIdx].id;
+                                        state.schedules[weekOf][dayIndex][shiftType][r1][p] = pair[0].id;
+                                        roleIdx++;
+                                    }
+                                    if (roleIdx < activeRoles.length) {
+                                        const r2 = activeRoles[roleIdx].id;
+                                        state.schedules[weekOf][dayIndex][shiftType][r2][p] = pair[1].id;
+                                        roleIdx++;
+                                    }
+                                } else {
+                                    if (roleIdx < activeRoles.length) {
+                                        const r = activeRoles[roleIdx].id;
+                                        state.schedules[weekOf][dayIndex][shiftType][r][p] = pair[0].id;
+                                        roleIdx++;
+                                    }
+                                }
+                            });
+
+                            currentCarouselStep++;
+                        }
+                    } else {
+                        const step = mode === "individual_2" ? 2 : 1;
+                       
+                        for (let p = 0; p < P; p++) {
+                            const phaseShift = (currentCarouselStep * step) % N;
+                            const currentStaff = [...activeStaff];
+                            for (let s = 0; s < phaseShift; s++) {
+                                currentStaff.push(currentStaff.shift());
+                            }
+
+                            for (let i = 0; i < N; i++) {
+                                const roleId = activeRoles[i].id;
+                                state.schedules[weekOf][dayIndex][shiftType][roleId][p] = currentStaff[i].id;
+                            }
+
+                            currentCarouselStep++;
+                        }
                     }
                 }
-            }
+            });
         }
 
         // Render Schedule View
@@ -1722,6 +1723,7 @@
                 state.settings.timeConfig.PM.push(document.getElementById(`time-PM-${i}`).value.trim());
             }
 
+            generateWeeklySchedule(state.settings.currentWeek);
             saveState();
             renderAll();
             alert("Rotation rules and timing profiles updated successfully!");
